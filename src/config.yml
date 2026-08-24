@@ -1,0 +1,6 @@
+# SusSMP konfigurasi
+meeting:
+  duration-seconds: 60      # durasi voting per meeting
+  cooldown-seconds: 300     # jeda antar meeting (5 menit)
+impostors: 1                # jumlah impostor
+win-bossbar: true
