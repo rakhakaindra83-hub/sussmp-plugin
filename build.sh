@@ -12,6 +12,6 @@ mkdir -p classes
 find src -name '*.java' > sources.txt
 "$JDK21/bin/javac" --release 21 -encoding UTF-8 -cp "$CP" -d classes @sources.txt
 cp src/plugin.yml src/config.yml classes/
-"$JDK21/bin/jar" cf sussmp-1.0.0.jar -C classes .
-ls -la sussmp-1.0.0.jar
+"$JDK21/bin/jar" cf sussmp-1.1.0.jar -C classes .
+ls -la sussmp-1.1.0.jar
 echo BUILD_OK
