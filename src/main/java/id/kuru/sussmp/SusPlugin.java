@@ -67,6 +67,7 @@ public final class SusPlugin extends JavaPlugin implements Listener {
 
     BossBar bossbar;
     MeetingVote vote;               // aktif saat MEETING
+    VoteGUI voteGui;                // GUI voting
     Random rng = new Random();
 
     @Override
@@ -77,10 +78,15 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         impostorCount  = getConfig().getInt("impostors", 1);
 
         getServer().getPluginManager().registerEvents(this, this);
+        voteGui = new VoteGUI(this);
+        new ChatVoteListener(this);
+        new GameRulesListener(this);
         var cmd = getCommand("sus");
         var exec = new SusCommand(this);
         cmd.setExecutor(exec);
         cmd.setTabCompleter(exec);
+        var vcmd = getCommand("vote");
+        if (vcmd != null) vcmd.setExecutor(new VoteCommand(this));
 
         getLogger().info("SusSMP aktif — jangan percaya siapa pun.");
     }
@@ -212,6 +218,18 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         new BukkitRunnable() {
             @Override public void run() { reset(); }
         }.runTaskLater(this, 200L); // 10 detik
+    }
+
+    /** Terima vote (dari chat maupun GUI). Return false jika voter tidak berhak. */
+    boolean castVote(MeetingVote vote, Player voter, UUID target) {
+        UUID vu = voter.getUniqueId();
+        if (!vote.eligible.contains(vu)) return false;
+        vote.votes.put(vu, target);
+        voter.sendMessage(PREFIX + "Vote tercatat: "
+                + (target == null ? "SKIP" : Bukkit.getOfflinePlayer(target).getName()));
+        // semua sudah vote? selesai cepat
+        if (vote.votes.keySet().containsAll(vote.eligible)) vote.finish();
+        return true;
     }
 
     void reset() {

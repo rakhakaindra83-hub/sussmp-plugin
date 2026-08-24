@@ -18,8 +18,8 @@ final class MeetingVote {
     private final SusPlugin plugin;
     private final String caller;
     private final String reason;
-    private final Map<UUID, UUID> votes = new HashMap<>(); // voter -> target (null UUID = skip)
-    private final List<UUID> eligible = new ArrayList<>();
+    final Map<UUID, UUID> votes = new HashMap<>(); // voter -> target (null UUID = skip)
+    final List<UUID> eligible = new ArrayList<>();
     private BukkitRunnable timer;
 
     MeetingVote(SusPlugin plugin, String caller, String reason) {
@@ -59,17 +59,24 @@ final class MeetingVote {
 
     private boolean phaseDone() { return plugin.phase != SusPlugin.Phase.MEETING; }
 
-    boolean castVote(Player voter, UUID target /* null = skip */) {
-        if (!eligible.contains(voter.getUniqueId())) return false;
-        votes.put(voter.getUniqueId(), target);
-        voter.sendMessage(SusPlugin.PREFIX + "Vote tercatat: "
-                + (target == null ? "SKIP" : Bukkit.getOfflinePlayer(target).getName()));
-        // semua sudah vote? selesai cepat
-        if (votes.keySet().containsAll(eligible)) finish();
-        return true;
+    UUID votedFor(UUID voter) {
+        return votes.get(voter);
     }
 
-    private void finish() {
+    int countVotes(UUID target) {
+        int n = 0;
+        for (UUID v : votes.values()) if (target.equals(v)) n++;
+        return n;
+    }
+
+    /** Pemain yang sudah memberi suara (utk GUI refresh). */
+    boolean hasVoted(UUID voter) { return votes.containsKey(voter); }
+
+    void castVote(Player voter, UUID target /* null = skip */) {
+        plugin.castVote(this, voter, target);
+    }
+
+    void finish() {
         if (phaseDone() && votes.isEmpty()) return;
         // hitung
         Map<UUID, Integer> tally = new HashMap<>();

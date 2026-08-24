@@ -7,6 +7,9 @@ commands:
   sus:
     description: Perintah utama SusSMP
     usage: /sus <add|remove|start|stop|meetingtime|cooldown|impostors|setlobby|setroom>
+  vote:
+    description: Buka GUI voting (hanya saat meeting)
+    usage: /vote
 permissions:
   sus.admin:
     description: Kelola game SusSMP
