@@ -8,7 +8,10 @@ Terinspirasi video "10 YouTubers VS 1 Secret Liar" & "10 YouTubers vs 1 Secret T
 2. `/sus start` → role acak: IMPOSTOR (bunuh semua) vs INNOCENT.
 3. Task crew: bunuh **Elder Guardian → Warden → Wither → Ender Dragon** (urutan wajib, The End terkunci sampai 3 bos pertama tumbang).
 4. Item **Emergency Bell** di hotbar — klik kanan untuk meeting (cooldown 5 menit, atur via config).
-5. Meeting: semua TP ke ruang meeting, vote via chat `!vote <nama>` / `!skip`, durasi bisa diatur. Yang diterusir ditandai kepala Steve + jadi spectator.
+5. Meeting: semua TP ke ruang meeting, vote via chat `!vote <nama>` / `!skip` **atau GUI**:
+   ketik `/vote` untuk buka jendela berisi kepala pemain yang masih hidup — klik = vote,
+   slot SKIP di pojok. `/vote` hanya bisa dipakai saat waktu voting (meeting) saja.
+   Durasi bisa diatur, yang diterusir ditandai kepala Steve + jadi spectator.
 
 ## Fitur
 - Title role saat mulai (IMPOSTOR merah / INNOCENT hijau)
