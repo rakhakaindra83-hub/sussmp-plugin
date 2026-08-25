@@ -47,12 +47,7 @@ final class SusCommand implements CommandExecutor, TabCompleter {
             }
             case "stop" -> {
                 if (plugin.phase == SusPlugin.Phase.LOBBY) return true;
-                for (UUID u : new ArrayList<>(plugin.players)) {
-                    Player p = Bukkit.getPlayer(u);
-                    if (p != null && p.getGameMode() == GameMode.SPECTATOR) p.setGameMode(GameMode.SURVIVAL);
-                }
-                if (plugin.bossbar != null) plugin.bossbar.removeAll();
-                plugin.reset();
+                plugin.reset(); // reset() sudah balikin gamemode + bersihkan inventory
                 sender.sendMessage(SusPlugin.PREFIX + "Game dihentikan.");
             }
             case "meetingtime" -> {
@@ -84,13 +79,20 @@ final class SusCommand implements CommandExecutor, TabCompleter {
                 plugin.meetingRoom = p.getLocation().clone().add(0, 0, 0);
                 sender.sendMessage(SusPlugin.PREFIX + "Ruang meeting dipasang di sini.");
             }
+            case "reload" -> {
+                plugin.reloadConfig();
+                plugin.meetingDuration = plugin.getConfig().getInt("meeting.duration-seconds", 60);
+                plugin.meetingCooldown = plugin.getConfig().getInt("meeting.cooldown-seconds", 300);
+                plugin.impostorCount   = plugin.getConfig().getInt("impostors", 1);
+                sender.sendMessage(SusPlugin.PREFIX + "Config dimuat ulang tanpa restart.");
+            }
             default -> usage(sender);
         }
         return true;
     }
 
     private void usage(CommandSender s) {
-        s.sendMessage(SusPlugin.PREFIX + "/sus add|remove|start|stop|meetingtime|cooldown|impostors|setroom");
+        s.sendMessage(SusPlugin.PREFIX + "/sus add|remove|start|stop|meetingtime|cooldown|impostors|setroom|reload");
     }
 
     private int intOr(String[] a, int i, int dflt) {
@@ -101,7 +103,7 @@ final class SusCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender s, Command c, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            out.addAll(List.of("add", "remove", "start", "stop", "meetingtime", "cooldown", "impostors", "setroom"));
+            out.addAll(List.of("add", "remove", "start", "stop", "meetingtime", "cooldown", "impostors", "setroom", "reload"));
         } else if (args.length == 2 && (args[0].equalsIgnoreCase("add") || args[0].equalsIgnoreCase("remove"))) {
             Bukkit.getOnlinePlayers().forEach(p -> out.add(p.getName()));
         }

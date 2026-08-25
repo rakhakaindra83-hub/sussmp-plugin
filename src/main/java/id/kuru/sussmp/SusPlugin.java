@@ -11,11 +11,8 @@ import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.ElderGuardian;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
-import org.bukkit.entity.Warden;
-import org.bukkit.entity.Wither;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
@@ -33,9 +30,7 @@ import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scoreboard.Scoreboard;
 import org.bukkit.scoreboard.Team;
 
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -54,11 +49,10 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     final Map<UUID, Boolean> alive = new HashMap<>();   // uuid -> hidup?
     final Map<UUID, Boolean> impostor = new HashMap<>();
     final Map<UUID, Location> preMeeting = new HashMap<>();
-    final Deque<NamespacedKey> taskQueue = new ArrayDeque<>();
-    NamespacedKey currentTask;
+    final Set<NamespacedKey> tasksLeft = new HashSet<>();
+    int tasksDone;
 
     Phase phase = Phase.LOBBY;
-    final List<Location> placedHeads = new ArrayList<>();   // kepala Steve pasca-vote, dibersihkan saat reset
     Location meetingRoom;
     long lastMeeting = -1;          // tick terakhir meeting dibuka
     int meetingDuration = 60;       // detik
@@ -91,6 +85,12 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         getLogger().info("SusSMP aktif — jangan percaya siapa pun.");
     }
 
+    @Override
+    public void onDisable() {
+        // /reload atau shutdown: pastikan bossbar tidak nyangkut di layar pemain
+        if (bossbar != null) { bossbar.removeAll(); bossbar = null; }
+    }
+
     /* ---------- item bell (emergency meeting) ---------- */
 
     ItemStack bellItem() {
@@ -117,32 +117,110 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         List<UUID> list = new ArrayList<>(players);
         if (list.size() < 2) { broadcast(PREFIX + "Minimal 2 pemain."); return; }
 
+        // bersihkan sisa state pemain sebelum mulai
+        for (UUID u : players) {
+            Player p = Bukkit.getPlayer(u);
+            if (p == null) continue;
+            p.getInventory().clear();
+            p.setGameMode(GameMode.SURVIVAL);
+            p.setHealth(20.0);
+            p.setFoodLevel(20);
+        }
+
+        // animasi countdown 3-2-1 lalu reveal role
+        phase = Phase.LOBBY;
+        broadcast(PREFIX + "Game dimulai dalam…");
+        new BukkitRunnable() {
+            int n = 3;
+            @Override public void run() {
+                if (n > 0) {
+                    for (UUID u : players) {
+                        Player p = Bukkit.getPlayer(u);
+                        if (p != null) p.sendTitle(ChatColor.YELLOW + "" + ChatColor.BOLD + n,
+                                ChatColor.GRAY + "Bersiap…", 2, 18, 2);
+                    }
+                    n--;
+                    return;
+                }
+                cancel();
+                revealRolesAndBegin();
+            }
+        }.runTaskTimer(this, 1L, 20L);
+    }
+
+    private void revealRolesAndBegin() {
+        List<UUID> list = new ArrayList<>(players);
+
         impostorCount = Math.max(1, Math.min(impostorCount, list.size() - 1));
         for (UUID u : players) { alive.put(u, true); impostor.put(u, false); }
+
+        // susun urutan reveal: impostor terakhir biar dramatis
+        List<UUID> imps = new ArrayList<>();
         for (int i = 0; i < impostorCount; i++) {
             UUID pick = list.remove(rng.nextInt(list.size()));
             impostor.put(pick, true);
-            Player p = Bukkit.getPlayer(pick);
-            if (p != null) {
-                p.sendTitle(ChatColor.RED + "IMPOSTOR", ChatColor.GRAY + "Bunuh semua tanpa ketahuan!", 10, 70, 20);
-                p.playSound(p, Sound.ENTITY_WARDEN_HEARTBEAT, 1f, 0.6f);
-            }
+            imps.add(pick);
         }
-        for (UUID u : list) {
+
+        rollThenReveal(list, imps);
+    }
+
+    /** Animasi rolling ala mesin slot: judul berganti nama role acak, makin lama makin lambat, lalu reveal asli. */
+    private void rollThenReveal(List<UUID> innocents, List<UUID> imps) {
+        List<String> pool = List.of("DETECTIVE", "MEDIC", "ENGINEER", "SNIPER",
+                "SPY", "JESTER", "VETERAN", "IMPOSTOR", "INNOCENT");
+        // 10 ganti cepat (@2 tick) lalu 5 makin lambat (jeda 4,6,8,10,12) — total ±3 detik
+        long at = 4L;
+        for (int k = 0; k < 15; k++) {
+            final String roll = pool.get(rng.nextInt(pool.size()));
+            final int idx = k;
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                for (UUID u : players) {
+                    Player p = Bukkit.getPlayer(u);
+                    if (p == null) continue;
+                    p.sendTitle(ChatColor.YELLOW.toString() + ChatColor.BOLD + roll,
+                            ChatColor.GRAY + "Rolling role\u2026", 0, 25, 0);
+                    p.playSound(p, Sound.UI_BUTTON_CLICK, 0.5f, 0.75f + idx * 0.04f);
+                }
+            }, at);
+            at += (k < 10) ? 2L : 4L + (k - 10) * 2L;
+        }
+        Bukkit.getScheduler().runTaskLater(this, () -> revealImpostors(innocents, imps), at);
+    }
+
+    private void revealImpostors(List<UUID> list, List<UUID> imps) {
+        final int[] step = {0};
+        new BukkitRunnable() {
+            @Override public void run() {
+                if (step[0] < imps.size()) {           // tampilkan impostor satu-satu
+                    Player p = Bukkit.getPlayer(imps.get(step[0]++));
+                    if (p != null) {
+                        p.sendTitle(ChatColor.RED + "IMPOSTOR", ChatColor.GRAY + "Bunuh semua tanpa ketahuan!", 10, 60, 10);
+                        p.playSound(p, Sound.ENTITY_WARDEN_HEARTBEAT, 1f, 0.6f);
+                    }
+                    return;
+                }
+                cancel();
+                beginPlay(list, imps);
+            }
+        }.runTaskTimer(this, 30L, 30L);
+    }
+
+    private void beginPlay(List<UUID> innocents, List<UUID> imps) {
+        for (UUID u : innocents) {
             Player p = Bukkit.getPlayer(u);
-            if (p != null) {
-                p.sendTitle(ChatColor.GREEN + "INNOCENT", ChatColor.AQUA + "Selesaikan 4 bos bersama!", 10, 70, 20);
+            if (p != null && !imps.contains(u)) {
+                p.sendTitle(ChatColor.GREEN + "INNOCENT", ChatColor.AQUA + "Selesaikan 4 bos bersama!", 10, 60, 10);
                 p.playSound(p, Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.2f);
             }
         }
 
-        // urutan bos: ElderGuardian -> Warden -> Wither -> EnderDragon
-        taskQueue.clear();
-        taskQueue.add(new NamespacedKey(this, "t_elder"));
-        taskQueue.add(new NamespacedKey(this, "t_warden"));
-        taskQueue.add(new NamespacedKey(this, "t_wither"));
-        taskQueue.add(new NamespacedKey(this, "t_dragon"));
-        currentTask = taskQueue.poll();
+        // bos bebas urutan, kecuali Ender Dragon: harus 3 bos lain tumbang dulu
+        tasksLeft.clear(); tasksDone = 0;
+        tasksLeft.add(new NamespacedKey(this, "t_elder"));
+        tasksLeft.add(new NamespacedKey(this, "t_warden"));
+        tasksLeft.add(new NamespacedKey(this, "t_wither"));
+        tasksLeft.add(new NamespacedKey(this, "t_dragon"));
 
         // kunci The End: portal frame & ender eye tidak dipakai — blokir via world access di PlayerPortalEvent
         for (UUID u : players) {
@@ -152,21 +230,12 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             p.getInventory().addItem(bellItem());
         }
 
-        bossbar = Bukkit.createBossBar(taskTitle(), BarColor.YELLOW, BarStyle.SEGMENTED_10);
+        bossbar = Bukkit.createBossBar(barTitle(), BarColor.YELLOW, BarStyle.SEGMENTED_10);
         bossbar.setProgress(0.0);
         players.forEach(u -> { Player p = Bukkit.getPlayer(u); if (p != null) bossbar.addPlayer(p); });
 
         phase = Phase.PLAYING;
-        broadcast(PREFIX + "Game dimulai! " + ChatColor.YELLOW + "Bunuh: " + taskTitle());
-    }
-
-    String taskTitle() {
-        return switch (bossName(currentTask)) {
-            case "Elder Guardian" -> "Elder Guardian";
-            case "Warden" -> "Warden";
-            case "Wither" -> "Wither";
-            default -> "Ender Dragon";
-        };
+        broadcast(PREFIX + "Game dimulai! " + ChatColor.YELLOW + "Buru 3 bos dulu — Ender Dragon paling akhir.");
     }
 
     String bossName(NamespacedKey key) {
@@ -179,24 +248,35 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         };
     }
 
-    void nextTaskOrWin() {
-        broadcast(PREFIX + ChatColor.GREEN + "Bos " + bossName(currentTask) + " tumbang! Task " +
-                (4 - taskQueue.size()) + "/4 selesai.");
-        if (taskQueue.isEmpty()) { crewWin(); return; }
-        currentTask = taskQueue.poll();
-        bossbar.setTitle(taskTitle());
-        bossbar.setProgress(0.0);
-        broadcast(PREFIX + "Target berikutnya: " + ChatColor.YELLOW + taskTitle());
+    /** End terbuka hanya setelah 3 bos non-dragon tumbang — urutan bebas. */
+    boolean dragonUnlocked() { return tasksDone >= 3; }
+
+    String barTitle() {
+        List<String> left = new ArrayList<>();
+        for (NamespacedKey k : tasksLeft) if (!k.getKey().equals("t_dragon")) left.add(bossName(k));
+        if (left.isEmpty()) return "Bunuh: Ender Dragon";
+        return "Bos tersisa: " + String.join(", ", left);
+    }
+
+    void updateBar() {
+        if (bossbar == null) return;
+        bossbar.setTitle(barTitle());
+        bossbar.setProgress(tasksDone / 4.0);
+    }
+
+    void bossKilled(NamespacedKey key) {
+        tasksLeft.remove(key); tasksDone++;
+        broadcast(PREFIX + ChatColor.GREEN + bossName(key) + " tumbang! Task " + tasksDone + "/4 selesai.");
+        if (tasksLeft.isEmpty()) { crewWin(); return; }
+        updateBar();
+        if (tasksDone == 3)
+            broadcast(PREFIX + "The End " + ChatColor.YELLOW + "terbuka!" + ChatColor.GRAY + " Saatnya Ender Dragon.");
     }
 
     void crewWin() {
         phase = Phase.ENDED;
         if (bossbar != null) bossbar.removeAll();
-        for (String n : getServer().getOnlinePlayers().stream().map(Player::getName).toList()) {
-            Player p = getServer().getPlayer(n);
-            if (p != null && players.contains(p.getUniqueId()))
-                p.sendTitle(ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN", ChatColor.WHITE + "Semua task selesai!", 10, 100, 20);
-        }
+        broadcastTitle(ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN", ChatColor.WHITE + "Semua task selesai!");
         broadcast(PREFIX + ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN!");
         scheduleReset();
     }
@@ -204,14 +284,18 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     void traitorWin() {
         phase = Phase.ENDED;
         if (bossbar != null) bossbar.removeAll();
-        for (UUID u : players) {
-            Player p = Bukkit.getPlayer(u);
-            if (p != null)
-                p.sendTitle(ChatColor.RED + "" + ChatColor.BOLD + "TRAITOR WIN",
-                        ChatColor.GRAY + "Impostor membantai semuanya…", 10, 100, 20);
-        }
+        broadcastTitle(ChatColor.RED + "" + ChatColor.BOLD + "TRAITOR WIN",
+                ChatColor.GRAY + "Impostor membantai semuanya…");
         broadcast(PREFIX + ChatColor.RED + "" + ChatColor.BOLD + "TRAITOR WIN!");
         scheduleReset();
+    }
+
+    /** Title animasi ke semua pemain game: fade-in, tahan 3 dtk, fade-out. */
+    void broadcastTitle(String title, String subtitle) {
+        for (UUID u : players) {
+            Player p = Bukkit.getPlayer(u);
+            if (p != null) p.sendTitle(title, subtitle, 15, 60, 15);
+        }
     }
 
     void scheduleReset() {
@@ -234,13 +318,20 @@ public final class SusPlugin extends JavaPlugin implements Listener {
 
     void reset() {
         phase = Phase.LOBBY;
-        alive.clear(); impostor.clear(); preMeeting.clear();
-        taskQueue.clear(); currentTask = null;
-        vote = null;
-        for (Location h : placedHeads) {
-            if (h.getBlock().getType() == Material.PLAYER_HEAD) h.getBlock().setType(Material.AIR);
+        if (bossbar != null) { bossbar.removeAll(); bossbar = null; } // fix: bossbar nyangkut saat game selesai/stop
+        // pulihkan semua pemain: gamemode + inventory bersih
+        for (UUID u : players) {
+            Player p = Bukkit.getPlayer(u);
+            if (p == null) continue;
+            p.setGameMode(GameMode.SURVIVAL);
+            p.getInventory().clear();
+            p.getInventory().setArmorContents(null);
+            for (PotionEffect pe : p.getActivePotionEffects()) p.removePotionEffect(pe.getType());
         }
-        placedHeads.clear();
+        alive.clear(); impostor.clear(); preMeeting.clear();
+        lastMeeting = -1; // fix: cooldown bell ikut reset tiap game selesai/stop
+        tasksLeft.clear(); tasksDone = 0;
+        vote = null;
         broadcast(PREFIX + "Game direset. /sus add + /sus start untuk main lagi.");
     }
 
@@ -262,9 +353,10 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         phase = Phase.MEETING;
         lastMeeting = getServer().getWorlds().getFirst().getGameTime();
 
-        Location room = meetingRoom != null ? meetingRoom : caller.getLocation().clone().add(0, 0, 0);
+        Location room = meetingRoom != null ? meetingRoom : caller.getLocation();
         preMeeting.clear();
         int i = 0;
+        List<Player> seated = new ArrayList<>();
         for (UUID u : new ArrayList<>(players)) {
             Player p = Bukkit.getPlayer(u);
             if (p == null || !alive.getOrDefault(u, false)) continue;
@@ -273,10 +365,16 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             Location seat = room.clone().add(Math.cos(ang) * 3, 0, Math.sin(ang) * 3);
             seat.setYaw((float) Math.toDegrees(-ang));
             p.teleport(seat);
+            seated.add(p);
+            p.sendTitle(ChatColor.GOLD + "" + ChatColor.BOLD + "MEETING",
+                    ChatColor.GRAY + reason, 5, 40, 10);
         }
 
         vote = new MeetingVote(this, caller.getName(), reason);
-        vote.begin(meetingDuration);
+        // buka GUI voting setelah teleport selesai (1 tick) biar nggak ketutup paksa
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            for (Player p : seated) voteGui.open(p);
+        }, 5L);
     }
 
     void endMeeting(UUID ejected) {
@@ -303,12 +401,11 @@ public final class SusPlugin extends JavaPlugin implements Listener {
                 + (wasImp ? ChatColor.RED + "IMPOSTOR!" : ChatColor.GREEN + "INNOCENT…"));
         if (out != null) {
             out.setGameMode(GameMode.SPECTATOR);
-            // kepala Steve di atas kepala yang diterusir
-            Location headLoc = out.getLocation().getBlock().getLocation().add(0.5, 2, 0.5);
-            if (headLoc.getBlock().getType().isAir()) {
-                headLoc.getBlock().setType(Material.PLAYER_HEAD);
-                placedHeads.add(headLoc);
-            }
+            out.sendTitle(ChatColor.RED + "DITERUSIR", ChatColor.GRAY + "Dia "
+                    + (wasImp ? ChatColor.RED + "IMPOSTOR!" : ChatColor.GREEN + "INNOCENT…"), 10, 60, 10);
+            out.playSound(out, Sound.ENTITY_ENDER_DRAGON_FLAP, 1f, 0.8f);
+            // ponytail: kepala Steve dihilangkan sesuai permintaan; kalau mau balik,
+            // taruh blok PLAYER_HEAD di sini dan catat lokasinya utk dibersihkan saat reset.
         }
         if (!wasImp) {
             // hukum kecil: innocent salah terusir → impostor makin bebas (tanpa efek tambahan)
@@ -372,19 +469,24 @@ public final class SusPlugin extends JavaPlugin implements Listener {
 
     @EventHandler
     public void onBossKill(EntityDeathEvent e) {
-        if (phase != Phase.PLAYING || currentTask == null) return;
-        EntityType t = e.getEntityType();
-        String need = bossName(currentTask);
-        boolean match = switch (need) {
-            case "Elder Guardian" -> t == EntityType.ELDER_GUARDIAN && e.getEntity() instanceof ElderGuardian;
-            case "Warden" -> t == EntityType.WARDEN && e.getEntity() instanceof Warden;
-            case "Wither" -> t == EntityType.WITHER && e.getEntity() instanceof Wither;
-            default -> t == EntityType.ENDER_DRAGON;
+        if (phase != Phase.PLAYING || tasksLeft.isEmpty()) return;
+        NamespacedKey hit = switch (e.getEntityType()) {
+            case ELDER_GUARDIAN -> keyOf("t_elder");
+            case WARDEN         -> keyOf("t_warden");
+            case WITHER         -> keyOf("t_wither");
+            case ENDER_DRAGON   -> keyOf("t_dragon");
+            default -> null;
         };
-        if (match && e.getEntity().getKiller() != null
+        if (hit == null || !tasksLeft.contains(hit)) return;
+        if (e.getEntity().getKiller() != null
                 && players.contains(e.getEntity().getKiller().getUniqueId())) {
-            nextTaskOrWin();
+            bossKilled(hit);
         }
+    }
+
+    private NamespacedKey keyOf(String name) {
+        for (NamespacedKey k : tasksLeft) if (k.getKey().equals(name)) return k;
+        return null;
     }
 
     /* ---------- util ---------- */

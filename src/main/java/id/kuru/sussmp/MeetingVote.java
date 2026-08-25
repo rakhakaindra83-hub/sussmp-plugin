@@ -33,7 +33,7 @@ final class MeetingVote {
     void begin(int seconds) {
         plugin.broadcast(SusPlugin.PREFIX + ChatColor.GOLD + ChatColor.BOLD + "EMERGENCY MEETING! "
                 + ChatColor.YELLOW + caller + ChatColor.GRAY + " " + reason);
-        plugin.broadcast(ChatColor.GRAY + "Ketik di chat: " + ChatColor.WHITE + "!vote <nama>"
+        plugin.broadcast(ChatColor.GRAY + "Klik kepala di GUI / ketik " + ChatColor.WHITE + "!vote <nama>"
                 + ChatColor.GRAY + " atau " + ChatColor.WHITE + "!skip" + ChatColor.GRAY + ". Waktu: "
                 + seconds + " dtk.");
         for (UUID u : eligible) {
@@ -49,8 +49,17 @@ final class MeetingVote {
                     cancel();
                     return;
                 }
-                if (left <= 5 || left % 10 == 0)
+                // countdown title tiap detik di 10 detik terakhir
+                if (left <= 5 || left % 10 == 0) {
                     plugin.broadcast(ChatColor.GRAY + "Voting berakhir dalam " + ChatColor.YELLOW + left + "dtk");
+                    if (left <= 5) {
+                        for (UUID u : eligible) {
+                            Player p = Bukkit.getPlayer(u);
+                            if (p != null) p.sendTitle(ChatColor.YELLOW + "" + ChatColor.BOLD + left,
+                                    "", 1, 15, 1);
+                        }
+                    }
+                }
                 left--;
             }
         };
@@ -98,6 +107,16 @@ final class MeetingVote {
         plugin.broadcast(sb.toString());
 
         UUID ejected = (tie || top == null || top == SKIP) ? null : top;
+
+        // tutup semua GUI voting sebelum hasil diumumkan
+        for (UUID u : eligible) {
+            Player p = Bukkit.getPlayer(u);
+            if (p != null && p.getOpenInventory().getTopInventory().getType()
+                    == org.bukkit.event.inventory.InventoryType.CHEST) {
+                p.closeInventory();
+            }
+        }
+
         plugin.endMeeting(ejected);
     }
 

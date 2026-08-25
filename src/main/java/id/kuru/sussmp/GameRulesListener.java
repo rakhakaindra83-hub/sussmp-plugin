@@ -24,19 +24,16 @@ final class GameRulesListener implements Listener {
         org.bukkit.Bukkit.getPluginManager().registerEvents(this, plugin);
     }
 
-    /** Kunci The End sampai Wither mati (task ke-3). */
+    /** Kunci The End sampai 3 bos non-dragon tumbang — urutan bebas. */
     @EventHandler(ignoreCancelled = true)
     public void onPortal(PlayerPortalEvent e) {
         if (plugin.phase != SusPlugin.Phase.PLAYING && plugin.phase != SusPlugin.Phase.MEETING) return;
         if (e.getCause() != PlayerTeleportEvent.TeleportCause.END_PORTAL
                 && e.getCause() != PlayerTeleportEvent.TeleportCause.END_GATEWAY) return;
-        // izinkan End hanya jika sudah di task terakhir (dragon)
-        boolean dragonPhase = plugin.currentTask != null
-                && "Ender Dragon".equals(plugin.taskTitle());
-        if (!dragonPhase) {
+        if (!plugin.dragonUnlocked()) {
             e.setCancelled(true);
             e.getPlayer().sendMessage(SusPlugin.PREFIX + ChatColor.RED
-                    + "The End masih terkunci! Tuntaskan: " + ChatColor.YELLOW + plugin.taskTitle());
+                    + "The End masih terkunci! Tumbangkan dulu 3 bos lainnya.");
         }
     }
 
@@ -45,6 +42,7 @@ final class GameRulesListener implements Listener {
     public void onDeath(PlayerDeathEvent e) {
         Player p = e.getEntity();
         if (!plugin.players.contains(p.getUniqueId())) return;
+        e.getDrops().removeIf(plugin::isBell); // fix: bell mati bersama pemiliknya, tidak nyempil di tanah
         e.deathMessage(null); // tidak ada death message saat game jalan
         if (p.getKiller() != null && plugin.impostor.getOrDefault(p.getKiller().getUniqueId(), false)) {
             // dibunuh impostor — jalankan alur kill

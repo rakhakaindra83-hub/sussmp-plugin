@@ -14,15 +14,17 @@ Terinspirasi video "10 YouTubers VS 1 Secret Liar" & "10 YouTubers vs 1 Secret T
    Durasi bisa diatur, yang diterusir ditandai kepala Steve + jadi spectator.
 
 ## Fitur
-- Title role saat mulai (IMPOSTOR merah / INNOCENT hijau)
-- Bossbar target bos aktif
+- Animasi rolling role ala mesin slot saat mulai (judul kuning berganti nama acak makin lambat, lalu reveal IMPOSTOR merah / INNOCENT hijau)
+- Task bos bebas urutan (bossbar = progres total); Ender Dragon harus terakhir — The End terkunci sampai 3 bos lain tumbang
+- Bossbar otomatis hilang saat game selesai/stop/reload plugin
+- `/sus reload` untuk muat ulang config tanpa restart
 - Death message dibungkam selama game
 - Bell tidak bisa dibuang, didrop, atau dipindah ke chest
 - Win: semua task / impostor terusir → CREW WIN (hijau); innocent habis → TRAITOR WIN (merah)
 - Jumlah impostor bisa diatur: `/sus impostors <jumlah>`
 
 ## Perintah admin (`sus.admin` / op)
-`sus add|remove|start|stop|meetingtime|cooldown|impostors|setroom`
+`sus add|remove|start|stop|meetingtime|cooldown|impostors|setroom|reload`
 
 ## Build
 Tanpa Gradle/Maven:

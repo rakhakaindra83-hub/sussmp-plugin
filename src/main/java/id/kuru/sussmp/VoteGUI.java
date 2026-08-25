@@ -10,7 +10,6 @@ import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.SkullMeta;
-import org.bukkit.profile.PlayerProfile;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -41,10 +40,9 @@ final class VoteGUI implements Listener {
             if (t == null) continue;
             ItemStack head = new ItemStack(Material.PLAYER_HEAD);
             SkullMeta m = (SkullMeta) head.getItemMeta();
-            PlayerProfile prof = t.getPlayerProfile();
-            m.setOwnerProfile(prof);
-            m.setDisplayName((plugin.vote != null && plugin.vote.votedFor(viewer.getUniqueId()).equals(u)
-                    ? ChatColor.GREEN + "✔ " : ChatColor.YELLOW + "") + t.getName());
+            m.setOwnerProfile(t.getPlayerProfile());
+            UUID myVote = plugin.vote == null ? null : plugin.vote.votedFor(viewer.getUniqueId());
+            m.setDisplayName(u.equals(myVote) ? ChatColor.GREEN + "✔ " + t.getName() : ChatColor.YELLOW + t.getName());
             List<String> lore = new ArrayList<>();
             lore.add(ChatColor.GRAY + "Vote: " + ChatColor.WHITE
                     + (plugin.vote == null ? 0 : plugin.vote.countVotes(u)));
@@ -96,12 +94,13 @@ final class VoteGUI implements Listener {
         }
     }
 
-    /** Refresh semua GUI pemain yang sedang membuka voting. */
+    /** Refresh semua GUI pemain yang sedang membuka voting (bandingin via title String, bukan Component). */
     void refreshAll() {
         for (UUID u : plugin.players) {
             Player p = Bukkit.getPlayer(u);
-            if (p != null && p.getOpenInventory().getTopInventory().getSize() > 0
-                    && p.getOpenInventory().title().equals(net.kyori.adventure.text.Component.text(TITLE))) {
+            if (p == null) continue;
+            var view = p.getOpenInventory();
+            if (view != null && ChatColor.stripColor(view.getTitle()) .startsWith("Voting")) {
                 open(p);
             }
         }

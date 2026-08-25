@@ -1,5 +1,5 @@
 name: SusSMP
-version: 1.1.0
+version: 1.4.2
 main: id.kuru.sussmp.SusPlugin
 api-version: '1.21'
 description: Social deduction ala Among Us - 10 player, 4 bos task, meeting bell, vote chat
