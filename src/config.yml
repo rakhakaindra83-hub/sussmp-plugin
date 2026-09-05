@@ -3,4 +3,7 @@ meeting:
   duration-seconds: 60      # durasi voting per meeting
   cooldown-seconds: 300     # jeda antar meeting (5 menit)
 impostors: 1                # jumlah impostor
+compass:
+  duration-seconds: 30      # durasi locator aktif saat compass dipakai (default 30 dtk)
+  cooldown-seconds: 60      # cooldown compass (default 1 menit)
 win-bossbar: true

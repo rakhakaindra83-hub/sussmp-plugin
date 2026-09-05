@@ -11,7 +11,7 @@ import org.bukkit.boss.BarColor;
 import org.bukkit.boss.BarStyle;
 import org.bukkit.boss.BossBar;
 import org.bukkit.enchantments.Enchantment;
-import org.bukkit.entity.EntityType;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.Listener;
@@ -28,7 +28,6 @@ import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.scheduler.BukkitRunnable;
 import org.bukkit.scoreboard.Scoreboard;
-import org.bukkit.scoreboard.Team;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -46,22 +45,34 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     enum Phase { LOBBY, PLAYING, MEETING, ENDED }
 
     final Set<UUID> players = new HashSet<>();
-    final Map<UUID, Boolean> alive = new HashMap<>();   // uuid -> hidup?
+    final Map<UUID, Boolean> alive = new HashMap<>();   
     final Map<UUID, Boolean> impostor = new HashMap<>();
     final Map<UUID, Location> preMeeting = new HashMap<>();
-    final Set<NamespacedKey> tasksLeft = new HashSet<>();
+
+    final Map<String, UUID> altarFrames = new HashMap<>();      
+    final Map<String, UUID> altarReqStands = new HashMap<>();   
+    final Map<String, UUID> summonedBossesByTask = new HashMap<>(); 
+    final Set<NamespacedKey> tasksLeft = new HashSet<>(); 
     int tasksDone;
 
     Phase phase = Phase.LOBBY;
     Location meetingRoom;
-    long lastMeeting = -1;          // tick terakhir meeting dibuka
-    int meetingDuration = 60;       // detik
-    int meetingCooldown = 300;      // detik
+    long lastMeeting = -1;          
+    int meetingDuration = 60;       
+    int meetingCooldown = 300;      
     int impostorCount = 1;
+    int compassDuration = 30;       // detik locator aktif
+    int compassCooldown = 60;       // detik cooldown compass
 
-    BossBar bossbar;
-    MeetingVote vote;               // aktif saat MEETING
-    VoteGUI voteGui;                // GUI voting
+    final Map<UUID, Long> compassCooldownUntil = new HashMap<>();
+    final Map<UUID, Long> locatorExpiry = new HashMap<>();
+    final Map<UUID, BossBar> locatorBars = new HashMap<>();
+
+    AltarManager altar;
+
+    BossBar bossbar; 
+    MeetingVote vote;               
+    VoteGUI voteGui;                
     Random rng = new Random();
 
     @Override
@@ -70,11 +81,18 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         meetingDuration = getConfig().getInt("meeting.duration-seconds", 60);
         meetingCooldown = getConfig().getInt("meeting.cooldown-seconds", 300);
         impostorCount  = getConfig().getInt("impostors", 1);
+        compassDuration = getConfig().getInt("compass.duration-seconds", 30);
+        compassCooldown = getConfig().getInt("compass.cooldown-seconds", 60);
 
         getServer().getPluginManager().registerEvents(this, this);
+        altar = new AltarManager(this);
         voteGui = new VoteGUI(this);
         new ChatVoteListener(this);
         new GameRulesListener(this);
+        
+        NamespacedKey eyeKey = NamespacedKey.minecraft("ender_eye");
+        Bukkit.removeRecipe(eyeKey);
+        
         var cmd = getCommand("sus");
         var exec = new SusCommand(this);
         cmd.setExecutor(exec);
@@ -82,16 +100,17 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         var vcmd = getCommand("vote");
         if (vcmd != null) vcmd.setExecutor(new VoteCommand(this));
 
-        getLogger().info("SusSMP aktif — jangan percaya siapa pun.");
+        getLogger().info("SusSMP aktif — 15 altar item task diimplementasikan.");
     }
 
     @Override
     public void onDisable() {
-        // /reload atau shutdown: pastikan bossbar tidak nyangkut di layar pemain
         if (bossbar != null) { bossbar.removeAll(); bossbar = null; }
+        for (UUID bossId : summonedBossesByTask.values()) {
+            Entity e = Bukkit.getEntity(bossId);
+            if (e != null) e.remove();
+        }
     }
-
-    /* ---------- item bell (emergency meeting) ---------- */
 
     ItemStack bellItem() {
         ItemStack it = new ItemStack(Material.BELL);
@@ -111,13 +130,78 @@ public final class SusPlugin extends JavaPlugin implements Listener {
                 && it.getItemMeta().getDisplayName().contains("Emergency Bell");
     }
 
-    /* ---------- alur game ---------- */
+    /* ---------- compass impostor ---------- */
+
+    ItemStack compassItem() {
+        ItemStack it = new ItemStack(Material.COMPASS);
+        ItemMeta m = it.getItemMeta();
+        m.setDisplayName(ChatColor.RED + "Impostor Compass");
+        m.setLore(List.of(ChatColor.GRAY + "Klik kanan untuk melihat locator player lain selama "
+                        + compassDuration + " detik.",
+                ChatColor.GRAY + "Cooldown " + compassCooldown + " detik.",
+                ChatColor.DARK_RED + "Tidak bisa dibuang atau dipindahkan keluar inventory."));
+        m.addEnchant(Enchantment.UNBREAKING, 1, true);
+        m.addItemFlags(ItemFlag.HIDE_ENCHANTS);
+        it.setItemMeta(m);
+        return it;
+    }
+
+    boolean isCompass(ItemStack it) {
+        return it != null && it.getType() == Material.COMPASS
+                && it.hasItemMeta() && it.getItemMeta().hasDisplayName()
+                && it.getItemMeta().getDisplayName().contains("Impostor Compass");
+    }
+
+    void activateCompass(Player p) {
+        UUID u = p.getUniqueId();
+        long now = System.currentTimeMillis();
+        long cdUntil = compassCooldownUntil.getOrDefault(u, 0L);
+        if (now < cdUntil) {
+            p.sendMessage(PREFIX + ChatColor.RED + "Compass cooldown! Tunggu "
+                    + (cdUntil - now) / 1000 + " dtk lagi.");
+            return;
+        }
+        compassCooldownUntil.put(u, now + compassCooldown * 1000L);
+        locatorExpiry.put(u, now + compassDuration * 1000L);
+        p.sendMessage(PREFIX + ChatColor.GREEN + "Locator aktif selama " + compassDuration + " detik.");
+
+        // Bossbar locator milik impostor — hanya impostor yang melihatnya
+        BossBar loc = Bukkit.createBossBar(ChatColor.RED + "LOCATOR aktif", BarColor.RED, BarStyle.SOLID);
+        loc.addPlayer(p);
+        locatorBars.put(u, loc);
+
+        // Task update isi bossbar (daftar nama player terdekat) + auto-expire
+        new BukkitRunnable() {
+            @Override public void run() {
+                Player pl = Bukkit.getPlayer(u);
+                if (pl == null || phase != Phase.PLAYING || !players.contains(u)
+                        || System.currentTimeMillis() >= locatorExpiry.getOrDefault(u, 0L)) {
+                    BossBar b = locatorBars.remove(u);
+                    if (b != null) b.removeAll();
+                    if (pl != null && phase == Phase.PLAYING && players.contains(u))
+                        pl.sendMessage(PREFIX + ChatColor.GRAY + "Locator mati.");
+                    cancel();
+                    return;
+                }
+                StringBuilder sb = new StringBuilder();
+                for (UUID v : players) {
+                    if (v.equals(u) || !alive.getOrDefault(v, false)) continue;
+                    Player t = Bukkit.getPlayer(v);
+                    if (t == null || !t.getWorld().equals(p.getWorld())) continue;
+                    int dist = (int) t.getLocation().distance(p.getLocation());
+                    sb.append(t.getName()).append(" (").append(dist).append("m)  ");
+                }
+                long left = (locatorExpiry.getOrDefault(u, 0L) - System.currentTimeMillis()) / 1000;
+                loc.setTitle(ChatColor.RED + "LOCATOR " + left + "s: "
+                        + (sb.length() == 0 ? "tidak ada player di world ini" : sb.toString()));
+                loc.setProgress(Math.max(0.0, Math.min(1.0, left / (double) compassDuration)));
+            }
+        }.runTaskTimer(this, 0L, 10L);
+    }
 
     void startGame() {
         List<UUID> list = new ArrayList<>(players);
         if (list.size() < 2) { broadcast(PREFIX + "Minimal 2 pemain."); return; }
-
-        // bersihkan sisa state pemain sebelum mulai
         for (UUID u : players) {
             Player p = Bukkit.getPlayer(u);
             if (p == null) continue;
@@ -126,8 +210,6 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             p.setHealth(20.0);
             p.setFoodLevel(20);
         }
-
-        // animasi countdown 3-2-1 lalu reveal role
         phase = Phase.LOBBY;
         broadcast(PREFIX + "Game dimulai dalam…");
         new BukkitRunnable() {
@@ -150,26 +232,20 @@ public final class SusPlugin extends JavaPlugin implements Listener {
 
     private void revealRolesAndBegin() {
         List<UUID> list = new ArrayList<>(players);
-
         impostorCount = Math.max(1, Math.min(impostorCount, list.size() - 1));
         for (UUID u : players) { alive.put(u, true); impostor.put(u, false); }
-
-        // susun urutan reveal: impostor terakhir biar dramatis
         List<UUID> imps = new ArrayList<>();
         for (int i = 0; i < impostorCount; i++) {
             UUID pick = list.remove(rng.nextInt(list.size()));
             impostor.put(pick, true);
             imps.add(pick);
         }
-
         rollThenReveal(list, imps);
     }
 
-    /** Animasi rolling ala mesin slot: judul berganti nama role acak, makin lama makin lambat, lalu reveal asli. */
     private void rollThenReveal(List<UUID> innocents, List<UUID> imps) {
         List<String> pool = List.of("DETECTIVE", "MEDIC", "ENGINEER", "SNIPER",
                 "SPY", "JESTER", "VETERAN", "IMPOSTOR", "INNOCENT");
-        // 10 ganti cepat (@2 tick) lalu 5 makin lambat (jeda 4,6,8,10,12) — total ±3 detik
         long at = 4L;
         for (int k = 0; k < 15; k++) {
             final String roll = pool.get(rng.nextInt(pool.size()));
@@ -179,7 +255,7 @@ public final class SusPlugin extends JavaPlugin implements Listener {
                     Player p = Bukkit.getPlayer(u);
                     if (p == null) continue;
                     p.sendTitle(ChatColor.YELLOW.toString() + ChatColor.BOLD + roll,
-                            ChatColor.GRAY + "Rolling role\u2026", 0, 25, 0);
+                            ChatColor.GRAY + "Rolling role…", 0, 25, 0);
                     p.playSound(p, Sound.UI_BUTTON_CLICK, 0.5f, 0.75f + idx * 0.04f);
                 }
             }, at);
@@ -192,7 +268,7 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         final int[] step = {0};
         new BukkitRunnable() {
             @Override public void run() {
-                if (step[0] < imps.size()) {           // tampilkan impostor satu-satu
+                if (step[0] < imps.size()) {
                     Player p = Bukkit.getPlayer(imps.get(step[0]++));
                     if (p != null) {
                         p.sendTitle(ChatColor.RED + "IMPOSTOR", ChatColor.GRAY + "Bunuh semua tanpa ketahuan!", 10, 60, 10);
@@ -210,73 +286,53 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         for (UUID u : innocents) {
             Player p = Bukkit.getPlayer(u);
             if (p != null && !imps.contains(u)) {
-                p.sendTitle(ChatColor.GREEN + "INNOCENT", ChatColor.AQUA + "Selesaikan 4 bos bersama!", 10, 60, 10);
+                p.sendTitle(ChatColor.GREEN + "INNOCENT", ChatColor.AQUA + "Selesaikan 15 task altar!", 10, 60, 10);
                 p.playSound(p, Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.2f);
             }
         }
-
-        // bos bebas urutan, kecuali Ender Dragon: harus 3 bos lain tumbang dulu
         tasksLeft.clear(); tasksDone = 0;
-        tasksLeft.add(new NamespacedKey(this, "t_elder"));
-        tasksLeft.add(new NamespacedKey(this, "t_warden"));
-        tasksLeft.add(new NamespacedKey(this, "t_wither"));
-        tasksLeft.add(new NamespacedKey(this, "t_dragon"));
-
-        // kunci The End: portal frame & ender eye tidak dipakai — blokir via world access di PlayerPortalEvent
+        AltarManager.ALTAR_NAMES.keySet().forEach(k -> tasksLeft.add(new NamespacedKey(this, k)));
+        summonedBossesByTask.clear();
+        altar.refillAll();
         for (UUID u : players) {
             Player p = Bukkit.getPlayer(u);
             if (p == null) continue;
             p.setGameMode(GameMode.SURVIVAL);
             p.getInventory().addItem(bellItem());
+            if (impostor.getOrDefault(u, false)) {
+                p.getInventory().addItem(compassItem());
+            }
         }
-
         bossbar = Bukkit.createBossBar(barTitle(), BarColor.YELLOW, BarStyle.SEGMENTED_10);
-        bossbar.setProgress(0.0);
-        players.forEach(u -> { Player p = Bukkit.getPlayer(u); if (p != null) bossbar.addPlayer(p); });
-
+        players.forEach(u -> {
+            Player p = Bukkit.getPlayer(u);
+            if (p != null && impostor.getOrDefault(u, false)) bossbar.addPlayer(p);
+        });
+        updateBar();
         phase = Phase.PLAYING;
-        broadcast(PREFIX + "Game dimulai! " + ChatColor.YELLOW + "Buru 3 bos dulu — Ender Dragon paling akhir.");
+        broadcast(PREFIX + ChatColor.YELLOW + "Game dimulai! Cari 15 altar dan kumpulkan Ender Eye.");
     }
-
-    String bossName(NamespacedKey key) {
-        if (key == null) return "";
-        return switch (key.getKey()) {
-            case "t_elder" -> "Elder Guardian";
-            case "t_warden" -> "Warden";
-            case "t_wither" -> "Wither";
-            default -> "Ender Dragon";
-        };
-    }
-
-    /** End terbuka hanya setelah 3 bos non-dragon tumbang — urutan bebas. */
-    boolean dragonUnlocked() { return tasksDone >= 3; }
 
     String barTitle() {
-        List<String> left = new ArrayList<>();
-        for (NamespacedKey k : tasksLeft) if (!k.getKey().equals("t_dragon")) left.add(bossName(k));
-        if (left.isEmpty()) return "Bunuh: Ender Dragon";
-        return "Bos tersisa: " + String.join(", ", left);
+        return "Task altar: " + tasksDone + "/" + AltarManager.ALTAR_NAMES.size();
     }
 
     void updateBar() {
         if (bossbar == null) return;
         bossbar.setTitle(barTitle());
-        bossbar.setProgress(tasksDone / 4.0);
+        bossbar.setProgress((double) tasksDone / AltarManager.ALTAR_NAMES.size());
     }
 
     void bossKilled(NamespacedKey key) {
-        tasksLeft.remove(key); tasksDone++;
-        broadcast(PREFIX + ChatColor.GREEN + bossName(key) + " tumbang! Task " + tasksDone + "/4 selesai.");
-        if (tasksLeft.isEmpty()) { crewWin(); return; }
-        updateBar();
-        if (tasksDone == 3)
-            broadcast(PREFIX + "The End " + ChatColor.YELLOW + "terbuka!" + ChatColor.GRAY + " Saatnya Ender Dragon.");
+        if (!key.getKey().equals("t_ender_dragon_altar")) return;
+        summonedBossesByTask.remove(key.getKey());
+        crewWin();
     }
 
     void crewWin() {
         phase = Phase.ENDED;
         if (bossbar != null) bossbar.removeAll();
-        broadcastTitle(ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN", ChatColor.WHITE + "Semua task selesai!");
+        broadcastTitle(ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN", ChatColor.WHITE + "Semua tugas selesai!");
         broadcast(PREFIX + ChatColor.GREEN + "" + ChatColor.BOLD + "CREW WIN!");
         scheduleReset();
     }
@@ -290,7 +346,6 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         scheduleReset();
     }
 
-    /** Title animasi ke semua pemain game: fade-in, tahan 3 dtk, fade-out. */
     void broadcastTitle(String title, String subtitle) {
         for (UUID u : players) {
             Player p = Bukkit.getPlayer(u);
@@ -301,25 +356,27 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     void scheduleReset() {
         new BukkitRunnable() {
             @Override public void run() { reset(); }
-        }.runTaskLater(this, 200L); // 10 detik
+        }.runTaskLater(this, 200L);
     }
 
-    /** Terima vote (dari chat maupun GUI). Return false jika voter tidak berhak. */
     boolean castVote(MeetingVote vote, Player voter, UUID target) {
         UUID vu = voter.getUniqueId();
         if (!vote.eligible.contains(vu)) return false;
         vote.votes.put(vu, target);
         voter.sendMessage(PREFIX + "Vote tercatat: "
                 + (target == null ? "SKIP" : Bukkit.getOfflinePlayer(target).getName()));
-        // semua sudah vote? selesai cepat
         if (vote.votes.keySet().containsAll(vote.eligible)) vote.finish();
         return true;
     }
 
     void reset() {
         phase = Phase.LOBBY;
-        if (bossbar != null) { bossbar.removeAll(); bossbar = null; } // fix: bossbar nyangkut saat game selesai/stop
-        // pulihkan semua pemain: gamemode + inventory bersih
+        if (bossbar != null) { bossbar.removeAll(); bossbar = null; }
+        for (UUID bossId : summonedBossesByTask.values()) {
+            Entity e = Bukkit.getEntity(bossId);
+            if (e != null) e.remove();
+        }
+        summonedBossesByTask.clear();
         for (UUID u : players) {
             Player p = Bukkit.getPlayer(u);
             if (p == null) continue;
@@ -329,13 +386,15 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             for (PotionEffect pe : p.getActivePotionEffects()) p.removePotionEffect(pe.getType());
         }
         alive.clear(); impostor.clear(); preMeeting.clear();
-        lastMeeting = -1; // fix: cooldown bell ikut reset tiap game selesai/stop
+        lastMeeting = -1;
         tasksLeft.clear(); tasksDone = 0;
         vote = null;
+        for (BossBar b : locatorBars.values()) b.removeAll();
+        locatorBars.clear();
+        locatorExpiry.clear();
+        compassCooldownUntil.clear();
         broadcast(PREFIX + "Game direset. /sus add + /sus start untuk main lagi.");
     }
-
-    /* ---------- meeting ---------- */
 
     boolean tryOpenMeeting(Player caller, boolean emergency) {
         if (phase != Phase.PLAYING) { caller.sendMessage(PREFIX + "Game belum jalan."); return false; }
@@ -352,7 +411,6 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     void openMeeting(Player caller, String reason) {
         phase = Phase.MEETING;
         lastMeeting = getServer().getWorlds().getFirst().getGameTime();
-
         Location room = meetingRoom != null ? meetingRoom : caller.getLocation();
         preMeeting.clear();
         int i = 0;
@@ -369,9 +427,7 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             p.sendTitle(ChatColor.GOLD + "" + ChatColor.BOLD + "MEETING",
                     ChatColor.GRAY + reason, 5, 40, 10);
         }
-
         vote = new MeetingVote(this, caller.getName(), reason);
-        // buka GUI voting setelah teleport selesai (1 tick) biar nggak ketutup paksa
         Bukkit.getScheduler().runTaskLater(this, () -> {
             for (Player p : seated) voteGui.open(p);
         }, 5L);
@@ -379,20 +435,17 @@ public final class SusPlugin extends JavaPlugin implements Listener {
 
     void endMeeting(UUID ejected) {
         phase = Phase.PLAYING;
-        // pulihkan posisi
         for (Map.Entry<UUID, Location> e : preMeeting.entrySet()) {
             Player p = Bukkit.getPlayer(e.getKey());
             if (p != null) p.teleport(e.getValue());
         }
         preMeeting.clear();
-
         if (ejected == null) {
             broadcast(PREFIX + "Vote skip — tidak ada yang diterusir.");
             vote = null;
             checkWinConditions();
             return;
         }
-
         Player out = Bukkit.getPlayer(ejected);
         String name = out != null ? out.getName() : "?";
         boolean wasImp = impostor.getOrDefault(ejected, false);
@@ -404,11 +457,6 @@ public final class SusPlugin extends JavaPlugin implements Listener {
             out.sendTitle(ChatColor.RED + "DITERUSIR", ChatColor.GRAY + "Dia "
                     + (wasImp ? ChatColor.RED + "IMPOSTOR!" : ChatColor.GREEN + "INNOCENT…"), 10, 60, 10);
             out.playSound(out, Sound.ENTITY_ENDER_DRAGON_FLAP, 1f, 0.8f);
-            // ponytail: kepala Steve dihilangkan sesuai permintaan; kalau mau balik,
-            // taruh blok PLAYER_HEAD di sini dan catat lokasinya utk dibersihkan saat reset.
-        }
-        if (!wasImp) {
-            // hukum kecil: innocent salah terusir → impostor makin bebas (tanpa efek tambahan)
         }
         vote = null;
         checkWinConditions();
@@ -419,7 +467,6 @@ public final class SusPlugin extends JavaPlugin implements Listener {
         if (!players.contains(u) || !alive.getOrDefault(u, false)) return;
         alive.put(u, false);
         p.setGameMode(GameMode.SPECTATOR);
-        broadcast(PREFIX + ChatColor.RED + p.getName() + ChatColor.GRAY + " telah dibunuh!");
         checkWinConditions();
     }
 
@@ -439,57 +486,70 @@ public final class SusPlugin extends JavaPlugin implements Listener {
     @EventHandler
     public void onInteract(PlayerInteractEvent e) {
         if (e.getAction() != Action.RIGHT_CLICK_AIR && e.getAction() != Action.RIGHT_CLICK_BLOCK) return;
-        if (!isBell(e.getItem())) return;
-        e.setCancelled(true);
         Player p = e.getPlayer();
         if (!players.contains(p.getUniqueId())) return;
-        tryOpenMeeting(p, true);
+        // Cek item di main hand dan off hand
+        ItemStack main = e.getItem();
+        ItemStack off = p.getInventory().getItemInOffHand();
+        if (isBell(main) || isBell(off)) {
+            e.setCancelled(true);
+            tryOpenMeeting(p, true);
+            return;
+        }
+        if (isCompass(main) || isCompass(off)) {
+            e.setCancelled(true);
+            if (impostor.getOrDefault(p.getUniqueId(), false)) {
+                activateCompass(p);
+            } else {
+                p.sendMessage(PREFIX + ChatColor.RED + "Bukan impostor!");
+            }
+        }
     }
 
-    /** Bell tidak bisa dibuang/dipindah/dijatuhkan. */
     @EventHandler
     public void onBellDrop(PlayerDropItemEvent e) {
-        if (isBell(e.getItemDrop().getItemStack())) {
+        if (isBell(e.getItemDrop().getItemStack()) || isCompass(e.getItemDrop().getItemStack())) {
             e.setCancelled(true);
         }
     }
 
-    /** Bell tidak bisa dipindah ke chest/hopper/inventaris lain (klik, shift-klik, tukar slot). */
     @EventHandler
     public void onBellClick(org.bukkit.event.inventory.InventoryClickEvent e) {
-        if (isBell(e.getCurrentItem()) || isBell(e.getCursor())) e.setCancelled(true);
+        ItemStack cur = e.getCurrentItem();
+        ItemStack cursor = e.getCursor();
+        boolean movingCompass = isCompass(cur) || isCompass(cursor);
+        boolean movingBell = isBell(cur) || isBell(cursor);
+        if (!movingCompass && !movingBell) return;
+        // Item khusus boleh dipindah-pindah DI DALAM inventory pemain sendiri,
+        // tapi tidak boleh dimasukkan ke chest/container lain.
+        var clicked = e.getClickedInventory();
+        var bottom = e.getView().getBottomInventory();
+        // Geser antar slot inventory sendiri = klik inventory bawah tanpa container lain
+        if (clicked == bottom && (e.getView().getTopInventory() == null
+                || e.getView().getTopInventory().getType() == org.bukkit.event.inventory.InventoryType.CRAFTING)) {
+            return; // izinkan geser di inventory sendiri
+        }
+        e.setCancelled(true);
     }
 
     @EventHandler
     public void onBellDrag(org.bukkit.event.inventory.InventoryDragEvent e) {
         for (ItemStack it : e.getNewItems().values()) {
-            if (isBell(it)) { e.setCancelled(true); return; }
+            if (isBell(it) || isCompass(it)) { e.setCancelled(true); return; }
         }
     }
 
     @EventHandler
     public void onBossKill(EntityDeathEvent e) {
-        if (phase != Phase.PLAYING || tasksLeft.isEmpty()) return;
-        NamespacedKey hit = switch (e.getEntityType()) {
-            case ELDER_GUARDIAN -> keyOf("t_elder");
-            case WARDEN         -> keyOf("t_warden");
-            case WITHER         -> keyOf("t_wither");
-            case ENDER_DRAGON   -> keyOf("t_dragon");
-            default -> null;
-        };
-        if (hit == null || !tasksLeft.contains(hit)) return;
-        if (e.getEntity().getKiller() != null
-                && players.contains(e.getEntity().getKiller().getUniqueId())) {
-            bossKilled(hit);
+        if (phase != Phase.PLAYING) return;
+        if (e.getEntityType() == org.bukkit.entity.EntityType.ENDER_DRAGON) {
+            bossKilled(new NamespacedKey(this, "t_ender_dragon_altar")); 
         }
     }
-
-    private NamespacedKey keyOf(String name) {
-        for (NamespacedKey k : tasksLeft) if (k.getKey().equals(name)) return k;
-        return null;
+    
+    NamespacedKey keyOf(String name) {
+        return new NamespacedKey(this, name);
     }
-
-    /* ---------- util ---------- */
 
     void broadcast(String msg) { getServer().broadcastMessage(msg); }
 

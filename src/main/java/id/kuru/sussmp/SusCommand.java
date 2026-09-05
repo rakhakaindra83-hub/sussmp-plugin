@@ -4,16 +4,18 @@ import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
+import org.bukkit.Material;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
-import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 final class SusCommand implements CommandExecutor, TabCompleter {
 
@@ -47,7 +49,7 @@ final class SusCommand implements CommandExecutor, TabCompleter {
             }
             case "stop" -> {
                 if (plugin.phase == SusPlugin.Phase.LOBBY) return true;
-                plugin.reset(); // reset() sudah balikin gamemode + bersihkan inventory
+                plugin.reset(); 
                 sender.sendMessage(SusPlugin.PREFIX + "Game dihentikan.");
             }
             case "meetingtime" -> {
@@ -74,16 +76,56 @@ final class SusCommand implements CommandExecutor, TabCompleter {
                 plugin.saveConfig();
                 sender.sendMessage(SusPlugin.PREFIX + "Jumlah impostor = " + v);
             }
+            case "compassduration" -> {
+                int v = intOr(args, 1, -1);
+                if (v < 1) { sender.sendMessage(SusPlugin.PREFIX + "/sus compassduration <detik>"); return true; }
+                plugin.compassDuration = v;
+                plugin.getConfig().set("compass.duration-seconds", v);
+                plugin.saveConfig();
+                sender.sendMessage(SusPlugin.PREFIX + "Durasi locator = " + v + " dtk.");
+            }
+            case "compasscooldown" -> {
+                int v = intOr(args, 1, -1);
+                if (v < 1) { sender.sendMessage(SusPlugin.PREFIX + "/sus compasscooldown <detik>"); return true; }
+                plugin.compassCooldown = v;
+                plugin.getConfig().set("compass.cooldown-seconds", v);
+                plugin.saveConfig();
+                sender.sendMessage(SusPlugin.PREFIX + "Cooldown compass = " + v + " dtk.");
+            }
             case "setroom" -> {
                 if (!(sender instanceof Player p)) { sender.sendMessage(SusPlugin.PREFIX + "Dari dalam game."); return true; }
                 plugin.meetingRoom = p.getLocation().clone().add(0, 0, 0);
                 sender.sendMessage(SusPlugin.PREFIX + "Ruang meeting dipasang di sini.");
+            }
+            case "altar" -> {
+                if (!(sender instanceof Player p)) { sender.sendMessage(SusPlugin.PREFIX + "Dari dalam game."); return true; }
+                if (args.length < 2) {
+                    sender.sendMessage(SusPlugin.PREFIX + "/sus altar <" +
+                            String.join("|", AltarManager.ALTAR_NAMES.keySet().stream()
+                                    .map(key -> key.substring(key.indexOf('_') + 1).replace("_altar", ""))
+                                    .collect(Collectors.toList())) + "|remove <key>>");
+                    return true;
+                }
+                if (args[1].equalsIgnoreCase("remove")) {
+                    if (args.length < 3) { sender.sendMessage(SusPlugin.PREFIX + "/sus altar remove <key>"); return true; }
+                    plugin.altar.removeAltar(p, "t_" + args[2] + "_altar");
+                    return true;
+                }
+
+                String altarKey = "t_" + args[1].toLowerCase() + (args[1].toLowerCase().contains("altar") ? "" : "_altar");
+                if (!AltarManager.ALTAR_NAMES.containsKey(altarKey)) {
+                    sender.sendMessage(SusPlugin.PREFIX + "Altar tidak ditemukan.");
+                    return true;
+                }
+                plugin.altar.place(p, altarKey);
             }
             case "reload" -> {
                 plugin.reloadConfig();
                 plugin.meetingDuration = plugin.getConfig().getInt("meeting.duration-seconds", 60);
                 plugin.meetingCooldown = plugin.getConfig().getInt("meeting.cooldown-seconds", 300);
                 plugin.impostorCount   = plugin.getConfig().getInt("impostors", 1);
+                plugin.compassDuration = plugin.getConfig().getInt("compass.duration-seconds", 30);
+                plugin.compassCooldown = plugin.getConfig().getInt("compass.cooldown-seconds", 60);
                 sender.sendMessage(SusPlugin.PREFIX + "Config dimuat ulang tanpa restart.");
             }
             default -> usage(sender);
@@ -92,7 +134,7 @@ final class SusCommand implements CommandExecutor, TabCompleter {
     }
 
     private void usage(CommandSender s) {
-        s.sendMessage(SusPlugin.PREFIX + "/sus add|remove|start|stop|meetingtime|cooldown|impostors|setroom|reload");
+        s.sendMessage(SusPlugin.PREFIX + "/sus add|remove|start|stop|meetingtime|cooldown|impostors|compassduration|compasscooldown|setroom|altar|reload");
     }
 
     private int intOr(String[] a, int i, int dflt) {
@@ -103,9 +145,19 @@ final class SusCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender s, Command c, String alias, String[] args) {
         List<String> out = new ArrayList<>();
         if (args.length == 1) {
-            out.addAll(List.of("add", "remove", "start", "stop", "meetingtime", "cooldown", "impostors", "setroom", "reload"));
+            out.addAll(List.of("add", "remove", "start", "stop", "meetingtime", "cooldown", "impostors", "setroom", "altar", "reload"));
         } else if (args.length == 2 && (args[0].equalsIgnoreCase("add") || args[0].equalsIgnoreCase("remove"))) {
             Bukkit.getOnlinePlayers().forEach(p -> out.add(p.getName()));
+        } else if (args.length == 2 && args[0].equalsIgnoreCase("altar")) {
+            List<String> altarKeys = AltarManager.ALTAR_NAMES.keySet().stream()
+                    .map(key -> key.substring(key.indexOf('_') + 1).replace("_altar", ""))
+                    .collect(Collectors.toList());
+            out.addAll(altarKeys);
+            out.add("remove");
+        } else if (args.length == 3 && args[0].equalsIgnoreCase("altar") && args[1].equalsIgnoreCase("remove")) {
+            out.addAll(AltarManager.ALTAR_NAMES.keySet().stream()
+                    .map(key -> key.substring(key.indexOf('_') + 1).replace("_altar", ""))
+                    .collect(Collectors.toList()));
         }
         String pre = args[args.length - 1].toLowerCase();
         out.removeIf(x -> !x.toLowerCase().startsWith(pre));

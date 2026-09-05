@@ -1,12 +1,12 @@
 name: SusSMP
-version: 1.4.2
+version: 1.9.0
 main: id.kuru.sussmp.SusPlugin
 api-version: '1.21'
-description: Social deduction ala Among Us - 10 player, 4 bos task, meeting bell, vote chat
+description: Social deduction ala Among Us - 15 altar task item, meeting bell, vote chat
 commands:
   sus:
     description: Perintah utama SusSMP
-    usage: /sus <add|remove|start|stop|meetingtime|cooldown|impostors|setlobby|setroom>
+    usage: /sus <add|remove|start|stop|meetingtime|cooldown|impostors|setroom|altar|reload>
   vote:
     description: Buka GUI voting (hanya saat meeting)
     usage: /vote
